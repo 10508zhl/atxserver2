@@ -50,6 +50,10 @@
     padding: 0px;
   }
 
+  .color-red {
+    color: red;
+  }
+
   .color-blue {
     color: blue;
   }
@@ -220,7 +224,9 @@
               <div class="card-body">
                 <dl>
                   <dt>ATX-AGENT地址</dt>
-                  <dd><code v-text="address"></code></dd>
+                  <dd><code v-text="address"></code>
+                    <i :data-clipboard-text="address" class="far fa-copy clipboard-copy cursor-pointer"></i>
+                  </dd>
                   <dt>ADB远程连接</dt>
                   <dd><code v-text="remoteConnectAddr"></code>
                     <i :data-clipboard-text="remoteConnectAddr" class="far fa-copy clipboard-copy cursor-pointer"></i>
@@ -264,11 +270,6 @@
                   @click="runShell('am start -a android.settings.WIRELESS_SETTINGS')">
                   <i class="fas fa-wifi"></i>
                   WIFI
-                </button>
-                <button class="btn btn-sm btn-outline-primary"
-                  @click="runShell('am start -n com.tencent.tmgp.sgame/.SGameActivity')">
-                  <i class="fas fa-gamepad"></i>
-                  王者荣耀
                 </button>
                 <hr>
                 <span v-for="v in userSettings.shortcuts" style="margin-right: 5px">
@@ -358,14 +359,15 @@
             </ul>
           </div>
         </el-tab-pane>
-        <el-tab-pane label="安装管理" name="packagemanager">
+        <el-tab-pane label="安装管理" name="installmanager">
           <el-upload ref="upload" class="upload-demo" drag action="/uploads" :on-success="onUpload" multiple>
             <i class="el-icon-upload"></i>
             <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
             <div class="el-upload__tip" slot="tip">暂时只支持apk的上传</div>
           </el-upload>
           <div class="form-group">
-            <label>URL</label>
+            <label
+              @dblclick='app.installUrl = "https://github.com/appium/java-client/raw/master/src/test/java/io/appium/java_client/ApiDemos-debug.apk"'>URL</label>
             <input type="text" class="form-control form-control-sm" placeholder="http://..." v-model="app.installUrl">
           </div>
           <div>
@@ -378,8 +380,50 @@
             <small><code v-text="app.packageName"></code></small>
           </p>
         </el-tab-pane>
+        <el-tab-pane label="文件管理" name="filemanager">
+          <div class="filemanagerDiv" :style="canvasStyle" style="overflow-y:auto">
+            <el-button size="mini" type="primary" @click="getPhoneFile('/sdcard')">返回 sdcard</el-button>
+            <el-button size="mini" type="primary" @click="getPhoneFile('..')">返回上层</el-button>
+            <el-input size="mini" v-model="phoneDir" placeholder="目标目录" :disabled="true">
+              <template slot="prepend">当前目录：</template>
+            </el-input>
+            <el-table size="mini" :data="phoneFiles">
+              <el-table-column label="文件名（点击选择文件夹）">
+                <template slot-scope="scope">
+                  <div width="100%" @dblclick="getPhoneFile(`${scope.row}`)">
+                    <span v-text="scope.row"></span>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </el-tab-pane>
         <el-tab-pane label="截图" name="screenshot">
           <a :href="screenshotUrl+'?download=screenshot.jpg'" download>下载截图</a>
+        </el-tab-pane>
+        <el-tab-pane label="应用管理" name="packagemanager">
+          <el-button icon="el-icon-refresh" size="small" @click="loadPackages">刷新</el-button>
+          <el-table :data="packages" :default-sort="{prop: 'name'}">
+            <el-table-column sortable prop="label" label="应用">
+              <template slot-scope="scope">
+                <img :src="`${deviceUrl}/packages/${scope.row.name}/icon`" onerror="this.onerror='';this.src='/static/images/transparent.png'"
+                  style="position: absolute; top: 50%; margin: -20px; height: 40px; left: 20px;" alt="icon" />
+                <span v-text=" scope.row.label" style="padding-left: 45px"></span>
+              </template>
+            </el-table-column>
+            <el-table-column sortable prop="name" label="包名"></el-table-column>
+            <el-table-column sortable label="版本号">
+              <template slot-scope="scope" v-if="scope.row.versionName">
+                <span v-text="scope.row.versionName"></span>(<span v-text="scope.row.versionCode"></span>)
+              </template>
+            </el-table-column>
+            <el-table-column label="操作">
+              <template slot-scope="scope">
+                <a class="color-red" href="javascript:void(0)" @click="removePackage(scope.row.name)">卸载</a>
+                <a href="javascript:void(0)" @click="appLaunch(scope.row.name)">启动</a>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -448,6 +492,7 @@
             message: "",
             launch: true,
           },
+          packages: [],
           userSettings: Object.assign({
             inputName: '',
             inputCommand: '',
@@ -457,8 +502,13 @@
               name: '删除',
             }]
           }, {}),
+          phoneFiles: [],
+          phoneDir: "",
         }, ret.device),
         methods: {
+          debug() {
+            console.log(...arguments);
+          },
           onUpload(resp, file, files) {
             if (!resp.success) {
               this.$message({
@@ -494,6 +544,14 @@
               }
             }).always(() => {
               this.app.finished = true
+            })
+          },
+          appLaunch(packageName) {
+            $.ajax({
+              url: `${this.deviceUrl}/session/${packageName}`,
+              method: "post"
+            }).then(ret => {
+              console.log(ret)
             })
           },
           addTopAppToShortcut() {
@@ -692,6 +750,14 @@
                 this.loadTerminal()
               }
             }
+            if (tab.name == "filemanager") {
+              this.getPhoneFile();
+            }
+            if (tab.name == "packagemanager") {
+              if (!this.packages.length) {
+                this.loadPackages()
+              }
+            }
           },
           loadTerminal() {
             let term;
@@ -750,6 +816,72 @@
             ws.onerror = (evt) => {
               console.log(evt)
             }
+          },
+          getPhoneFile(dir) {
+            if (!dir || dir == "/sdcard") {
+              this.phoneDir = "/sdcard";
+            } else if (dir == "..") {
+              if (this.phoneDir.indexOf("/") == this.phoneDir.lastIndexOf("/")){
+                this.phoneDir = "/sdcard";
+              } else {
+                this.phoneDir = this.phoneDir.substr(0, this.phoneDir.lastIndexOf("/"));
+              }
+            } else if (dir == this.phoneDir) {
+              this.phoneDir = dir;
+            } else {
+              this.phoneDir = this.phoneDir + "/" + dir;
+            }
+            this.runShell('ls \"' + this.phoneDir + '/\"')
+            .done(ret => {
+              this.phoneFiles = ret.output.split("\n");
+              this.phoneFiles.pop();
+              if (this.phoneFiles[0].search("^ls.*Not a directory$") == 0) {
+                this.$message({
+                  showClose: true,
+                  message: "不是文件夹",
+                  type: "error"
+                });
+                this.getPhoneFile('..');
+              }
+            });
+          },
+          loadPackages() {
+            return this.runShell("pm list packages -3").then(ret => {
+              let packages = []
+              ret.output.split(/\r?\n/).forEach(v => {
+                if (v.startsWith("package:")) {
+                  const packageName = v.substr("package:".length)
+                  let item = {
+                    key: packageName,
+                    name: packageName,
+                    label: "",
+                    versionName: "",
+                    versionCode: "",
+                  }
+                  $.getJSON(`${this.deviceUrl}/packages/${packageName}/info`).then(ret => {
+                    if (ret.success && ret.data) {
+                      item.label = ret.data.label
+                      item.versionName = ret.data.versionName
+                      item.versionCode = ret.data.versionCode
+                      console.log(packageName, ret.data)
+                    }
+                  })
+                  packages.push(item)
+                }
+              })
+              this.packages = packages;
+            })
+          },
+          removePackage(packageName) {
+            if (!confirm(`确认卸载 ${packageName} ?`)) {
+              return
+            }
+            return this.runShell(`pm uninstall ${packageName}`).then(() => {
+              const index = this.packages.findIndex((v) => {
+                return v.name == packageName
+              })
+              this.packages.splice(index, 1)
+            })
           },
           openDisplayTouchpad() {
             this.mirrorDisplay()
@@ -1306,7 +1438,8 @@
 
           this.initClipboardJS()
 
-          this.fixInputMethod(true)
+          // Disable WhatsInputMethod to prevent influence UIAutomation
+          // this.fixInputMethod(true)
         },
         computed: {
           address() {
